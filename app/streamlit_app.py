@@ -70,9 +70,6 @@ if mode == "이미지":
 
         st.info(f"탐지 객체 수: {len(results[0].boxes)}")
 
-# ----------------------------
-# 영상 모드 (샘플 프레임만)
-# ----------------------------
 else:
     uploaded = st.file_uploader("영상 업로드", type=["mp4", "avi", "mov", "mkv"])
 
@@ -82,44 +79,38 @@ else:
         video_path = tfile.name
 
         st.video(video_path)
-        st.warning("영상은 무거울 수 있어 샘플 프레임만 추론합니다.")
 
         import cv2
-        cap = cv2.VideoCapture(video_path)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        pick_indices = [
-            0,
-            frame_count // 3,
-            (frame_count * 2) // 3,
-            max(0, frame_count - 1)
-        ]
-        pick_indices = sorted(list(set([i for i in pick_indices if i >= 0])))
+        st.sidebar.subheader("🎞️ 영상 옵션")
+        frame_skip = st.sidebar.slider("프레임 간격(클수록 빠름)", 1, 30, 5)
 
-        frames_show = []
-        idx = 0
-        pick_set = set(pick_indices)
+        if st.button("영상 감지 실행"):
+            cap = cv2.VideoCapture(video_path)
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if idx in pick_set:
+            view = st.empty()
+            idx = 0
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                idx += 1
+                if idx % frame_skip != 0:
+                    continue
+
                 results = model.predict(
                     source=frame,
                     conf=conf,
                     iou=iou,
                     verbose=False
                 )
+
                 plotted = results[0].plot()  # BGR
-                frames_show.append(plotted)
-            idx += 1
+                plotted = plotted[:, :, ::-1]  # RGB
 
-        cap.release()
+                view.image(plotted, use_container_width=True)
 
-        st.subheader("📌 샘플 프레임 탐지 결과")
-        if frames_show:
-            for f in frames_show:
-                st.image(f[:, :, ::-1], use_container_width=True)
-        else:
-            st.info("샘플 프레임을 표시하지 못했습니다.")
+            cap.release()
+            st.success("영상 감지 완료!")

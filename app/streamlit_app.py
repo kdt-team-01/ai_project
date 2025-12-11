@@ -40,71 +40,68 @@ except Exception as e:
     st.stop()
 
 # ----------------------------
-# 이미지 모드
-# ----------------------------
-if mode == "이미지":
-    uploaded = st.file_uploader("이미지 업로드", type=["jpg", "jpeg", "png"])
-
-    if uploaded:
-        img = Image.open(uploaded).convert("RGB")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("원본")
-            st.image(img, use_container_width=True)
-
-        results = model.predict(
-            source=np.array(img),
-            conf=conf,
-            iou=iou,
-            verbose=False
-        )
-
-        plotted = results[0].plot()  # BGR
-        plotted = plotted[:, :, ::-1]  # RGB 변환
-
-        with col2:
-            st.subheader("탐지 결과")
-            st.image(plotted, use_container_width=True)
-
-        st.info(f"탐지 객체 수: {len(results[0].boxes)}")
-
-# ----------------------------
-# 영상 모드 (샘플 프레임만)
+# 영상 모드 (프레임 스트리밍 방식)
 # ----------------------------
 else:
     uploaded = st.file_uploader("영상 업로드", type=["mp4", "avi", "mov", "mkv"])
+
+    st.sidebar.subheader("🎬 영상 옵션")
+    frame_skip = st.sidebar.slider("프레임 스킵(속도용)", 0, 10, 2, 1)  
+    # 0이면 매 프레임 추론, 2면 3프레임 중 1프레임 추론 느낌
+    max_width = st.sidebar.selectbox("리사이즈 폭(속도용)", [640, 800, 960, 1280], index=2)
+    play_fps = st.sidebar.slider("표시 FPS(느낌)", 1, 30, 12, 1)
 
     if uploaded:
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(uploaded.read())
         video_path = tfile.name
 
-        st.video(video_path)
-        st.warning("영상은 무거울 수 있어 샘플 프레임만 추론합니다.")
+        st.info("✅ 아래 영역에서 업로드 영상이 '탐지 오버레이된 형태로' 바로 재생처럼 표시됩니다.")
+        st.caption("※ Streamlit 기본 플레이어 위 실시간 오버레이는 어려워서, 프레임을 연속 출력하는 방식입니다.")
+
+        # 재생 제어용 상태
+        if "playing" not in st.session_state:
+            st.session_state.playing = False
+
+        colA, colB = st.columns(2)
+        with colA:
+            if st.button("▶️ 재생", use_container_width=True):
+                st.session_state.playing = True
+        with colB:
+            if st.button("⏸️ 정지", use_container_width=True):
+                st.session_state.playing = False
+
+        display_area = st.empty()
+        progress = st.progress(0)
 
         import cv2
+        import time
+
         cap = cv2.VideoCapture(video_path)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
 
-        pick_indices = [
-            0,
-            frame_count // 3,
-            (frame_count * 2) // 3,
-            max(0, frame_count - 1)
-        ]
-        pick_indices = sorted(list(set([i for i in pick_indices if i >= 0])))
-
-        frames_show = []
         idx = 0
-        pick_set = set(pick_indices)
+        last_time = time.time()
 
-        while True:
+        # 재생 루프
+        while cap.isOpened() and st.session_state.playing:
             ret, frame = cap.read()
             if not ret:
                 break
-            if idx in pick_set:
+
+            # 진행률
+            if total > 0:
+                progress.progress(min(idx / total, 1.0))
+
+            # 리사이즈(속도)
+            h, w = frame.shape[:2]
+            if w > max_width:
+                new_h = int(h * (max_width / w))
+                frame = cv2.resize(frame, (max_width, new_h))
+
+            # 프레임 스킵 기반 추론
+            if frame_skip == 0 or (idx % (frame_skip + 1) == 0):
                 results = model.predict(
                     source=frame,
                     conf=conf,
@@ -112,14 +109,27 @@ else:
                     verbose=False
                 )
                 plotted = results[0].plot()  # BGR
-                frames_show.append(plotted)
+            else:
+                plotted = frame
+
+            # BGR -> RGB
+            plotted_rgb = plotted[:, :, ::-1]
+
+            # 화면 표시(영상처럼)
+            display_area.image(plotted_rgb, use_container_width=True)
+
             idx += 1
 
-        cap.release()
+            # 표시 FPS 조절(느낌)
+            elapsed = time.time() - last_time
+            target_delay = max(1.0 / play_fps - elapsed, 0)
+            time.sleep(target_delay)
+            last_time = time.time()
 
-        st.subheader("📌 샘플 프레임 탐지 결과")
-        if frames_show:
-            for f in frames_show:
-                st.image(f[:, :, ::-1], use_container_width=True)
+        cap.release()
+        progress.empty()
+
+        if not st.session_state.playing:
+            st.warning("⏸️ 정지 상태입니다. 재생을 누르면 다시 시작합니다.")
         else:
-            st.info("샘플 프레임을 표시하지 못했습니다.")
+            st.success("✅ 영상 끝까지 재생 완료!")

@@ -40,6 +40,20 @@ def index():
         conf=CURRENT_CONF,
         iou=CURRENT_IOU,
     )
+    
+    
+# -----------------------------
+# 클래스 이름 재정의
+# -----------------------------
+NEW_CLASS_NAMES = {
+    0: "승용차",
+    1: "소형버스",
+    2: "대형버스",
+    3: "트럭",
+    4: "대형트레일러",
+    5: "오토바이",
+    6: "보행자",
+}
 
 
 # -----------------------------
@@ -83,6 +97,10 @@ def upload():
             iou=CURRENT_IOU,
             verbose=False,
         )
+        
+        # 클래스 이름 재정의
+        if NEW_CLASS_NAMES:
+            results[0].names = NEW_CLASS_NAMES
 
         # 박스 그리기 (BGR)
         plotted = results[0].plot()
@@ -141,19 +159,6 @@ def image_result():
         return "No image", 404
     return send_file(path, mimetype="image/jpeg")
 
-
-# -----------------------------
-# 클래스 이름 재정의
-# -----------------------------
-NEW_CLASS_NAMES = {
-    0: "승용차",
-    1: "소형버스",
-    2: "대형버스",
-    3: "트럭",
-    4: "대형트레일러",
-    5: "오토바이",
-    6: "보행자",
-}
 
 # -----------------------------
 # 영상 프레임 스트리밍 제너레이터

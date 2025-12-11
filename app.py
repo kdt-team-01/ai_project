@@ -215,3 +215,4 @@ def video_feed():
 if __name__ == "__main__":
     # debug=False 로 두면 watchdog 에러 없이 깔끔하게 돌아감
     app.run(host="0.0.0.0", port=5000, debug=False)
+#

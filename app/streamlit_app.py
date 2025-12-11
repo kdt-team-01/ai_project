@@ -40,14 +40,14 @@ except Exception as e:
     st.stop()
 
 # ----------------------------
-# 영상 모드 (전체 영상에 박스 씌운 결과 mp4 생성)
+# 영상 모드 (전체 영상에 박스 씌운 결과 mp4 생성 - imageio 방식)
 # ----------------------------
 else:
     uploaded = st.file_uploader("영상 업로드", type=["mp4", "avi", "mov", "mkv"])
 
     # 성능 옵션
     st.sidebar.subheader("🎬 영상 옵션")
-    frame_skip = st.sidebar.slider("프레임 스킵(속도용)", 1, 10, 2, 1)  # 1이면 모든 프레임
+    frame_skip = st.sidebar.slider("프레임 스킵(속도용)", 1, 10, 2, 1)
     resize_w = st.sidebar.selectbox("리사이즈 폭(속도용)", [None, 1280, 960, 720, 640], index=2)
 
     if uploaded:
@@ -61,7 +61,7 @@ else:
 
         if st.button("🚀 영상 전체 탐지해서 결과 영상 만들기"):
             import cv2
-            import os
+            import imageio.v2 as imageio
 
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
@@ -69,6 +69,8 @@ else:
                 st.stop()
 
             fps = cap.get(cv2.CAP_PROP_FPS)
+            fps = fps if fps and fps > 0 else 20
+
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -81,11 +83,9 @@ else:
             else:
                 out_w, out_h = w, h
 
-            # 출력 파일
             out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
 
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(out_path, fourcc, fps if fps > 0 else 20, (out_w, out_h))
+            writer = imageio.get_writer(out_path, fps=fps)
 
             progress = st.progress(0)
             status = st.empty()
@@ -115,29 +115,38 @@ else:
                     verbose=False
                 )
 
-                # 박스 그려진 프레임
-                plotted = results[0].plot()  # BGR
+                plotted = results[0].plot()  # BGR (uint8)
 
-                writer.write(plotted)
+                # imageio는 RGB 권장
+                frame_rgb = plotted[:, :, ::-1]
+
+                writer.append_data(frame_rgb)
 
                 processed += 1
                 idx += 1
 
-                # 진행 표시
                 if total > 0:
                     progress_val = min(1.0, idx / total)
                     progress.progress(progress_val)
                     status.write(f"처리 중... {idx}/{total} 프레임")
 
             cap.release()
-            writer.release()
+            writer.close()
+
+            if processed == 0:
+                st.error("처리된 프레임이 없습니다. frame_skip 값을 1~2로 낮춰보세요.")
+                st.stop()
+
             progress.progress(1.0)
             status.write("✅ 변환 완료!")
 
             st.subheader("✅ 탐지 결과 영상")
-            st.video(out_path)
+
+            # 파일 바이트로 재생 (더 안정적)
+            with open(out_path, "rb") as f:
+                st.video(f.read())
 
             st.info(
-                "※ Streamlit은 원본 영상 위에 실시간 오버레이가 어려워서 "
-                "탐지된 새 영상을 만들어 재생하는 방식이 가장 안정적입니다."
+                "※ Streamlit Cloud에서는 OpenCV mp4 인코딩이 종종 실패해서 "
+                "imageio(내장 ffmpeg)로 결과 영상을 만드는 방식이 가장 안정적입니다."
             )

@@ -5,3 +5,5 @@ torchvision
 opencv-python-headless
 pillow
 numpy
+imageio
+imageio-ffmpeg

@@ -143,6 +143,19 @@ def image_result():
 
 
 # -----------------------------
+# 클래스 이름 재정의
+# -----------------------------
+NEW_CLASS_NAMES = {
+    0: "승용차",
+    1: "소형버스",
+    2: "대형버스",
+    3: "트럭",
+    4: "대형트레일러",
+    5: "오토바이",
+    6: "보행자",
+}
+
+# -----------------------------
 # 영상 프레임 스트리밍 제너레이터
 # -----------------------------
 def generate_video_stream():
@@ -166,6 +179,9 @@ def generate_video_stream():
             iou=CURRENT_IOU,
             verbose=False,
         )
+        
+        if NEW_CLASS_NAMES:
+                    results[0].names = NEW_CLASS_NAMES
 
         plotted = results[0].plot()  # BGR 프레임 (박스 포함)
 

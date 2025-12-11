@@ -40,66 +40,74 @@ except Exception as e:
     st.stop()
 
 # ----------------------------
-# 이미지 모드
+# 영상 모드 (전체 영상에 박스 씌운 결과 mp4 생성)
 # ----------------------------
-if mode == "이미지":
-    uploaded = st.file_uploader("이미지 업로드", type=["jpg", "jpeg", "png"])
-
-    if uploaded:
-        img = Image.open(uploaded).convert("RGB")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("원본")
-            st.image(img, use_container_width=True)
-
-        results = model.predict(
-            source=np.array(img),
-            conf=conf,
-            iou=iou,
-            verbose=False
-        )
-
-        plotted = results[0].plot()  # BGR
-        plotted = plotted[:, :, ::-1]  # RGB 변환
-
-        with col2:
-            st.subheader("탐지 결과")
-            st.image(plotted, use_container_width=True)
-
-        st.info(f"탐지 객체 수: {len(results[0].boxes)}")
-
 else:
     uploaded = st.file_uploader("영상 업로드", type=["mp4", "avi", "mov", "mkv"])
 
-    if uploaded:
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(uploaded.read())
-        video_path = tfile.name
+    # 성능 옵션
+    st.sidebar.subheader("🎬 영상 옵션")
+    frame_skip = st.sidebar.slider("프레임 스킵(속도용)", 1, 10, 2, 1)  # 1이면 모든 프레임
+    resize_w = st.sidebar.selectbox("리사이즈 폭(속도용)", [None, 1280, 960, 720, 640], index=2)
 
+    if uploaded:
+        # 원본 저장
+        in_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        in_file.write(uploaded.read())
+        video_path = in_file.name
+
+        st.subheader("원본 영상")
         st.video(video_path)
 
-        import cv2
+        if st.button("🚀 영상 전체 탐지해서 결과 영상 만들기"):
+            import cv2
+            import os
 
-        st.sidebar.subheader("🎞️ 영상 옵션")
-        frame_skip = st.sidebar.slider("프레임 간격(클수록 빠름)", 1, 30, 5)
-
-        if st.button("영상 감지 실행"):
             cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                st.error("영상 파일을 열 수 없습니다.")
+                st.stop()
 
-            view = st.empty()
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            # 리사이즈 적용
+            if resize_w is not None and resize_w < w:
+                scale = resize_w / w
+                out_w = int(w * scale)
+                out_h = int(h * scale)
+            else:
+                out_w, out_h = w, h
+
+            # 출력 파일
+            out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(out_path, fourcc, fps if fps > 0 else 20, (out_w, out_h))
+
+            progress = st.progress(0)
+            status = st.empty()
+
             idx = 0
+            processed = 0
 
-            while cap.isOpened():
+            while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
 
-                idx += 1
+                # 프레임 스킵
                 if idx % frame_skip != 0:
+                    idx += 1
                     continue
 
+                # 리사이즈
+                if (out_w, out_h) != (w, h):
+                    frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+                # YOLO 추론
                 results = model.predict(
                     source=frame,
                     conf=conf,
@@ -107,10 +115,29 @@ else:
                     verbose=False
                 )
 
+                # 박스 그려진 프레임
                 plotted = results[0].plot()  # BGR
-                plotted = plotted[:, :, ::-1]  # RGB
 
-                view.image(plotted, use_container_width=True)
+                writer.write(plotted)
+
+                processed += 1
+                idx += 1
+
+                # 진행 표시
+                if total > 0:
+                    progress_val = min(1.0, idx / total)
+                    progress.progress(progress_val)
+                    status.write(f"처리 중... {idx}/{total} 프레임")
 
             cap.release()
-            st.success("영상 감지 완료!")
+            writer.release()
+            progress.progress(1.0)
+            status.write("✅ 변환 완료!")
+
+            st.subheader("✅ 탐지 결과 영상")
+            st.video(out_path)
+
+            st.info(
+                "※ Streamlit은 원본 영상 위에 실시간 오버레이가 어려워서 "
+                "탐지된 새 영상을 만들어 재생하는 방식이 가장 안정적입니다."
+            )

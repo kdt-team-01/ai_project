@@ -40,113 +40,96 @@ except Exception as e:
     st.stop()
 
 # ----------------------------
-# 영상 모드 (전체 영상에 박스 씌운 결과 mp4 생성 - imageio 방식)
+# 영상 모드 (프레임 스트리밍 방식)
 # ----------------------------
 else:
     uploaded = st.file_uploader("영상 업로드", type=["mp4", "avi", "mov", "mkv"])
 
-    # 성능 옵션
     st.sidebar.subheader("🎬 영상 옵션")
-    frame_skip = st.sidebar.slider("프레임 스킵(속도용)", 1, 10, 2, 1)
-    resize_w = st.sidebar.selectbox("리사이즈 폭(속도용)", [None, 1280, 960, 720, 640], index=2)
+    frame_skip = st.sidebar.slider("프레임 스킵(속도용)", 0, 10, 2, 1)  
+    # 0이면 매 프레임 추론, 2면 3프레임 중 1프레임 추론 느낌
+    max_width = st.sidebar.selectbox("리사이즈 폭(속도용)", [640, 800, 960, 1280], index=2)
+    play_fps = st.sidebar.slider("표시 FPS(느낌)", 1, 30, 12, 1)
 
     if uploaded:
-        # 원본 저장
-        in_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        in_file.write(uploaded.read())
-        video_path = in_file.name
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(uploaded.read())
+        video_path = tfile.name
 
-        st.subheader("원본 영상")
-        st.video(video_path)
+        st.info("✅ 아래 영역에서 업로드 영상이 '탐지 오버레이된 형태로' 바로 재생처럼 표시됩니다.")
+        st.caption("※ Streamlit 기본 플레이어 위 실시간 오버레이는 어려워서, 프레임을 연속 출력하는 방식입니다.")
 
-        if st.button("🚀 영상 전체 탐지해서 결과 영상 만들기"):
-            import cv2
-            import imageio.v2 as imageio
+        # 재생 제어용 상태
+        if "playing" not in st.session_state:
+            st.session_state.playing = False
 
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                st.error("영상 파일을 열 수 없습니다.")
-                st.stop()
+        colA, colB = st.columns(2)
+        with colA:
+            if st.button("▶️ 재생", use_container_width=True):
+                st.session_state.playing = True
+        with colB:
+            if st.button("⏸️ 정지", use_container_width=True):
+                st.session_state.playing = False
 
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            fps = fps if fps and fps > 0 else 20
+        display_area = st.empty()
+        progress = st.progress(0)
 
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        import cv2
+        import time
 
-            # 리사이즈 적용
-            if resize_w is not None and resize_w < w:
-                scale = resize_w / w
-                out_w = int(w * scale)
-                out_h = int(h * scale)
-            else:
-                out_w, out_h = w, h
+        cap = cv2.VideoCapture(video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        fps_src = cap.get(cv2.CAP_PROP_FPS) or 30
 
-            out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        idx = 0
+        last_time = time.time()
 
-            writer = imageio.get_writer(out_path, fps=fps)
+        # 재생 루프
+        while cap.isOpened() and st.session_state.playing:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-            progress = st.progress(0)
-            status = st.empty()
+            # 진행률
+            if total > 0:
+                progress.progress(min(idx / total, 1.0))
 
-            idx = 0
-            processed = 0
+            # 리사이즈(속도)
+            h, w = frame.shape[:2]
+            if w > max_width:
+                new_h = int(h * (max_width / w))
+                frame = cv2.resize(frame, (max_width, new_h))
 
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                # 프레임 스킵
-                if idx % frame_skip != 0:
-                    idx += 1
-                    continue
-
-                # 리사이즈
-                if (out_w, out_h) != (w, h):
-                    frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
-
-                # YOLO 추론
+            # 프레임 스킵 기반 추론
+            if frame_skip == 0 or (idx % (frame_skip + 1) == 0):
                 results = model.predict(
                     source=frame,
                     conf=conf,
                     iou=iou,
                     verbose=False
                 )
+                plotted = results[0].plot()  # BGR
+            else:
+                plotted = frame
 
-                plotted = results[0].plot()  # BGR (uint8)
+            # BGR -> RGB
+            plotted_rgb = plotted[:, :, ::-1]
 
-                # imageio는 RGB 권장
-                frame_rgb = plotted[:, :, ::-1]
+            # 화면 표시(영상처럼)
+            display_area.image(plotted_rgb, use_container_width=True)
 
-                writer.append_data(frame_rgb)
+            idx += 1
 
-                processed += 1
-                idx += 1
+            # 표시 FPS 조절(느낌)
+            elapsed = time.time() - last_time
+            target_delay = max(1.0 / play_fps - elapsed, 0)
+            time.sleep(target_delay)
+            last_time = time.time()
 
-                if total > 0:
-                    progress_val = min(1.0, idx / total)
-                    progress.progress(progress_val)
-                    status.write(f"처리 중... {idx}/{total} 프레임")
+        cap.release()
+        progress.empty()
 
-            cap.release()
-            writer.close()
-
-            if processed == 0:
-                st.error("처리된 프레임이 없습니다. frame_skip 값을 1~2로 낮춰보세요.")
-                st.stop()
-
-            progress.progress(1.0)
-            status.write("✅ 변환 완료!")
-
-            st.subheader("✅ 탐지 결과 영상")
-
-            # 파일 바이트로 재생 (더 안정적)
-            with open(out_path, "rb") as f:
-                st.video(f.read())
-
-            st.info(
-                "※ Streamlit Cloud에서는 OpenCV mp4 인코딩이 종종 실패해서 "
-                "imageio(내장 ffmpeg)로 결과 영상을 만드는 방식이 가장 안정적입니다."
-            )
+        if not st.session_state.playing:
+            st.warning("⏸️ 정지 상태입니다. 재생을 누르면 다시 시작합니다.")
+        else:
+            st.success("✅ 영상 끝까지 재생 완료!")

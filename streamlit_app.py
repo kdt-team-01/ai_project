@@ -3,14 +3,15 @@ from ultralytics import YOLO
 import cv2
 import tempfile
 import numpy as np
+import os
+import time
 
 # -----------------------------
 # 설정값 및 상수 정의
 # -----------------------------
-# 파일 업로드 유형 정의
 SUPPORTED_MEDIA_TYPES = ["jpg", "jpeg", "png", "mp4", "avi", "mov", "mkv"]
-# 모델 파일 (예시)
-DEFAULT_MODEL_PATH = "yolov8n.pt" 
+# 모델 파일 경로를 'yolo11n.pt'로 수정했습니다.
+DEFAULT_MODEL_PATH = "yolo11n.pt" 
 
 # Flask 앱에서 가져온 클래스 이름 재정의
 NEW_CLASS_NAMES = {
@@ -24,10 +25,34 @@ NEW_CLASS_NAMES = {
 }
 
 # -----------------------------
+# YOLO 모델 로드 (캐시 사용)
+# -----------------------------
+@st.cache_resource
+def load_yolo_model(path):
+    try:
+        model = YOLO(path)
+        
+        # --- 오류 해결을 위한 클래스 이름 재정의 수정 ---
+        if NEW_CLASS_NAMES:
+            # model.names 대신 내부 모델 객체의 names 속성을 수정합니다.
+            if hasattr(model.model, 'names'):
+                 model.model.names = NEW_CLASS_NAMES
+                 st.success("클래스 이름 재정의 적용 완료.")
+            else:
+                 # YOLOv8+ 버전이 아닐 경우를 대비한 대체 로직 (경고만 표시)
+                 st.warning("경고: 모델 내부 이름 속성(names)을 찾을 수 없습니다. 이름 재정의가 적용되지 않을 수 있습니다.")
+        # ---------------------------------------------
+            
+        return model
+    except Exception as e:
+        st.error(f"모델 로드 오류: {e}. 경로와 파일명을 다시 확인해주세요.")
+        return None
+
+# -----------------------------
 # Streamlit 앱 시작
 # -----------------------------
 
-st.title("🚗 YOLO 객체 탐지 간이 테스트")
+st.title("🚗 YOLO 객체 탐지 간이 테스트 (YOLO11n)")
 st.markdown("이미지나 영상을 업로드하여 YOLO 모델의 실시간 탐지 결과를 확인하세요.")
 
 # --- 사이드바에서 설정값 받기 ---
@@ -54,23 +79,10 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # 1. 모델 로드 (캐싱을 통해 재로드 방지)
-    @st.cache_resource
-    def load_yolo_model(path):
-        try:
-            model = YOLO(path)
-            # 클래스 이름 재정의 적용
-            if NEW_CLASS_NAMES:
-                model.names = NEW_CLASS_NAMES
-            return model
-        except Exception as e:
-            st.error(f"모델 로드 오류: {e}")
-            return None
-
+    # 1. 모델 로드
     model = load_yolo_model(model_path)
 
     if model:
-        # 2. 파일 타입 확인
         file_extension = uploaded_file.name.split(".")[-1].lower()
 
         # -----------------------------
@@ -91,13 +103,9 @@ if uploaded_file is not None:
                 verbose=False
             )
             
-            # 박스 그리기 (BGR 결과)
             plotted_bgr = results[0].plot()
+            plotted_rgb = plotted_bgr[:, :, ::-1] # BGR을 RGB로 변환
             
-            # BGR을 RGB로 변환 (Streamlit은 RGB를 사용)
-            plotted_rgb = plotted_bgr[:, :, ::-1]
-            
-            # 결과 표시
             st.image(plotted_rgb, caption="탐지 결과", use_column_width=True)
 
 
@@ -108,17 +116,16 @@ if uploaded_file is not None:
             st.header("🎥 영상 탐지 (프레임 단위)")
 
             # 임시 파일로 저장
-            tfile = tempfile.NamedTemporaryFile(delete=False)
-            tfile.write(uploaded_file.read())
+            with tempfile.NamedTemporaryFile(delete=False) as tfile:
+                tfile.write(uploaded_file.read())
+                temp_video_path = tfile.name
 
             # 스트리밍 처리 (Streamlit의 placeholder 사용)
             video_placeholder = st.empty()
-            
-            cap = cv2.VideoCapture(tfile.name)
-            
-            # 비디오 처리 상태 표시
             st_status = st.empty()
-
+            
+            cap = cv2.VideoCapture(temp_video_path)
+            
             frame_count = 0
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -133,23 +140,22 @@ if uploaded_file is not None:
                     verbose=False
                 )
                 
-                # 박스 그리기 (BGR)
                 plotted_bgr = results[0].plot()
+                plotted_rgb = plotted_bgr[:, :, ::-1] # BGR을 RGB로 변환
                 
-                # BGR을 RGB로 변환 (Streamlit 출력용)
-                plotted_rgb = plotted_bgr[:, :, ::-1]
-
-                # Streamlit에 프레임 표시
                 video_placeholder.image(plotted_rgb, channels="RGB")
                 
                 frame_count += 1
                 st_status.text(f"처리된 프레임 수: {frame_count}")
                 
+                # Streamlit의 높은 부하를 줄이기 위해 짧게 쉼
+                time.sleep(0.01)
+
             cap.release()
-            st_status.success("영상 처리 완료!")
+            st_status.success(f"총 {frame_count} 프레임 처리 완료!")
 
             # 임시 파일 삭제
-            os.unlink(tfile.name)
+            os.unlink(temp_video_path)
         
         else:
             st.error("지원하지 않는 파일 형식입니다.")

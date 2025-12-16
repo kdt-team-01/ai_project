@@ -16,11 +16,12 @@
 
 **4. 작업 타임 테이블**
 
-![image](https://github.com/user-attachments/assets/b5d6278a-276a-4105-97da-4b58716484a6)
+<img width="974" height="491" alt="작업" src="https://github.com/user-attachments/assets/fb0a26a6-b5ab-4764-954d-8e2f0800c2d3" />
 
 **5. 실제 예시**
 
-![image](https://github.com/user-attachments/assets/aaa26322-233d-4970-890f-60de7349df27)
+![KakaoTalk_20251212_143246621_01](https://github.com/user-attachments/assets/32e4df83-f0fd-4a9b-a002-ceb2622d7231)
+
 
 실시간 CCTV와 함께 혼잡도 정보를 메시지로 실시간 확인 가능.
 안전거리 측정 후, 위험할 시 경고 메시지 출력
@@ -31,6 +32,6 @@
 
 # 발표 일자
 
-**1차 발표 : 4월 11일 금**
+**1차 발표 : 12월 15일 월**
 
-**최종 발표 : 4월 18일 금**
+**최종 발표 : 12월 23일 화**

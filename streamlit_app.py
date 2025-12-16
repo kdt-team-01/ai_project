@@ -10,10 +10,10 @@ import time
 # 설정값 및 상수 정의
 # -----------------------------
 SUPPORTED_MEDIA_TYPES = ["jpg", "jpeg", "png", "mp4", "avi", "mov", "mkv"]
-# 모델 파일 경로를 'yolo11n.pt'로 수정했습니다.
+# 모델 파일 경로: 요청하신 'yolo11n.pt' 유지
 DEFAULT_MODEL_PATH = "yolo11n.pt" 
 
-# Flask 앱에서 가져온 클래스 이름 재정의
+# 클래스 이름 재정의
 NEW_CLASS_NAMES = {
     0: "승용차",
     1: "소형버스",
@@ -26,23 +26,15 @@ NEW_CLASS_NAMES = {
 
 # -----------------------------
 # YOLO 모델 로드 (캐시 사용)
+# *KeyError 방지를 위해, 여기서는 단순 로드만 수행하고 이름 변경은 추론 직후에 합니다.*
 # -----------------------------
 @st.cache_resource
 def load_yolo_model(path):
+    """모델 경로가 바뀌면 다시 로드, 아니면 기존 모델 재사용"""
     try:
         model = YOLO(path)
-        
-        # --- 오류 해결을 위한 클래스 이름 재정의 수정 ---
-        if NEW_CLASS_NAMES:
-            # model.names 대신 내부 모델 객체의 names 속성을 수정합니다.
-            if hasattr(model.model, 'names'):
-                 model.model.names = NEW_CLASS_NAMES
-                 st.success("클래스 이름 재정의 적용 완료.")
-            else:
-                 # YOLOv8+ 버전이 아닐 경우를 대비한 대체 로직 (경고만 표시)
-                 st.warning("경고: 모델 내부 이름 속성(names)을 찾을 수 없습니다. 이름 재정의가 적용되지 않을 수 있습니다.")
-        # ---------------------------------------------
-            
+        # **주의**: 여기서 model.names를 건드리면 KeyError가 발생할 수 있습니다.
+        # 이름 재정의는 추론 후 results 객체에 직접 할당합니다.
         return model
     except Exception as e:
         st.error(f"모델 로드 오류: {e}. 경로와 파일명을 다시 확인해주세요.")
@@ -103,6 +95,10 @@ if uploaded_file is not None:
                 verbose=False
             )
             
+            # *** KeyError 방지를 위한 클래스 이름 재정의 ***
+            if results and results[0]:
+                results[0].names = NEW_CLASS_NAMES
+
             plotted_bgr = results[0].plot()
             plotted_rgb = plotted_bgr[:, :, ::-1] # BGR을 RGB로 변환
             
@@ -139,6 +135,10 @@ if uploaded_file is not None:
                     iou=iou_threshold, 
                     verbose=False
                 )
+                
+                # *** KeyError 방지를 위한 클래스 이름 재정의 ***
+                if results and results[0]:
+                    results[0].names = NEW_CLASS_NAMES
                 
                 plotted_bgr = results[0].plot()
                 plotted_rgb = plotted_bgr[:, :, ::-1] # BGR을 RGB로 변환

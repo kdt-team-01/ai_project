@@ -13,11 +13,13 @@
 **3. 설명**
    
     비·눈·안개 등으로 도로 CCTV 영상의 화질이 저하되어 탐지가 잘 되지않는 차량·신호등 등의 객체를 실시간 
-    탐지 후 결과를 웹 페이지에서 바로 확인 가능.
+    탐지 후 결과를 웹 페이지에서 바로 확인 가능한 시스템 구현
 
 **4. 작업 타임 테이블**
 
-<img width="974" height="491" alt="작업" src="https://github.com/user-attachments/assets/fb0a26a6-b5ab-4764-954d-8e2f0800c2d3" />
+<img width="990" height="536" alt="tempsnip" src="https://github.com/user-attachments/assets/09bafb5a-45a1-42c7-b347-57843190a22c" />
+
+
 
 **5. 실제 예시**
 

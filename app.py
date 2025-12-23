@@ -1,223 +1,234 @@
-from flask import Flask, render_template, request, Response, send_file
+from flask import Flask, render_template, request, Response, send_file, redirect, url_for, jsonify
 import os
 import tempfile
 import cv2
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
+import torch
 
-app = Flask(__name__)
+from urllib.parse import urlparse
+import ipaddress
+import socket
+import subprocess
+import shutil
+from typing import Optional, Dict
 
-# 업로드된 영상 경로 / 설정값 전역 저장
-CURRENT_VIDEO_PATH = None
-CURRENT_MODEL_PATH = "yolo11n.pt"
+# ----------------------------------------------------
+# PyInstaller 대응 및 Flask 설정
+# ----------------------------------------------------
+base_dir = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(base_dir, "templates"),
+    static_folder=os.path.join(base_dir, "static"),
+)
+
+# ----------------------------------------------------
+# 전역 상태
+# ----------------------------------------------------
+CURRENT_VIDEO_PATH: Optional[str] = None
+CURRENT_SOURCE_URL: Optional[str] = None
+CURRENT_SOURCE_HEADERS: Dict[str, str] = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.utic.go.kr/",
+}
+
+CURRENT_MODEL_PATH = "best.pt"
 CURRENT_CONF = 0.25
 CURRENT_IOU = 0.45
+CURRENT_MODEL = None 
 
+# [추가] 실시간 탐지 개수를 저장할 변수
+LATEST_COUNTS = {}
 
-# -----------------------------
-# YOLO 모델 로드 (간단 캐시)
-# -----------------------------
+# 라벨 설정 (기존과 동일)
+BEST_KR = {0: "승용차", 1: "소형버스", 2: "대형버스", 3: "트럭", 4: "대형트레일러", 5: "오토바이", 6: "보행자"}
+COCO_KR = {0: "사람", 2: "승용차", 3: "오토바이", 5: "버스", 7: "트럭"}
+
+# ----------------------------------------------------
+# 헬퍼 함수
+# ----------------------------------------------------
 def load_model(path: str):
-    """모델 경로가 바뀌면 다시 로드, 아니면 기존 모델 재사용"""
     global CURRENT_MODEL
-    if "CURRENT_MODEL" not in globals() or getattr(CURRENT_MODEL, "model_path", None) != path:
+    if CURRENT_MODEL is None or getattr(CURRENT_MODEL, "model_path", None) != path:
         CURRENT_MODEL = YOLO(path)
         CURRENT_MODEL.model_path = path
     return CURRENT_MODEL
 
+def apply_names(result0, model, model_path: str):
+    base = model.names
+    if isinstance(base, (list, tuple)):
+        base = {i: n for i, n in enumerate(base)}
+    merged = dict(base if isinstance(base, dict) else {})
+    if os.path.basename(model_path).lower() == "best.pt":
+        merged.update(BEST_KR)
+    else:
+        merged.update(COCO_KR)
+    result0.names = merged
 
-# -----------------------------
-# 메인 화면
-# -----------------------------
+# ----------------------------------------------------
+# SSRF 및 유틸리티 (기존과 동일)
+# ----------------------------------------------------
+def is_public_host(hostname: str) -> bool:
+    try:
+        ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        return not (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local)
+    except: return False
+
+def validate_stream_url(u: str) -> Optional[str]:
+    u = (u or "").strip()
+    if not u: return None
+    p = urlparse(u)
+    if p.scheme in ("http", "https", "rtsp") and p.hostname and is_public_host(p.hostname):
+        return u
+    return None
+
+# ----------------------------------------------------
+# 라우트 및 API
+# ----------------------------------------------------
 @app.route("/")
 def index():
+    stream_url = "/video_feed" if (CURRENT_VIDEO_PATH or CURRENT_SOURCE_URL) else None
     return render_template(
         "index.html",
-        image_url=None,
-        stream_url=None,
+        stream_url=stream_url,
         model_path=CURRENT_MODEL_PATH,
         conf=CURRENT_CONF,
         iou=CURRENT_IOU,
+        source_url=CURRENT_SOURCE_URL or ""
     )
-    
-    
-# -----------------------------
-# 클래스 이름 재정의
-# -----------------------------
-NEW_CLASS_NAMES = {
-    0: "승용차",
-    1: "소형버스",
-    2: "대형버스",
-    3: "트럭",
-    4: "대형트레일러",
-    5: "오토바이",
-    6: "보행자",
-}
 
+# [추가] 자바스크립트가 호출할 탐지 개수 API
+@app.route("/get_counts")
+def get_counts():
+    # 보행자나 오토바이가 있는지 체크 (알람용)
+    has_danger = any(k in LATEST_COUNTS for k in ["보행자", "사람", "오토바이"])
+    return jsonify({
+        "counts": LATEST_COUNTS,
+        "has_danger": has_danger
+    })
 
-# -----------------------------
-# 업로드 후 처리
-# -----------------------------
+@app.route("/set_url", methods=["POST"])
+def set_url():
+    global CURRENT_SOURCE_URL, CURRENT_VIDEO_PATH, CURRENT_MODEL_PATH, CURRENT_CONF, CURRENT_IOU, LATEST_COUNTS
+    LATEST_COUNTS = {} # 초기화
+    CURRENT_MODEL_PATH = request.form.get("model_path", CURRENT_MODEL_PATH)
+    CURRENT_CONF = float(request.form.get("conf", CURRENT_CONF))
+    CURRENT_IOU = float(request.form.get("iou", CURRENT_IOU))
+    url = validate_stream_url(request.form.get("source_url", ""))
+    CURRENT_SOURCE_URL = url
+    CURRENT_VIDEO_PATH = None
+    return redirect(url_for("index"))
+
 @app.route("/upload", methods=["POST"])
 def upload():
-    global CURRENT_VIDEO_PATH, CURRENT_MODEL_PATH, CURRENT_CONF, CURRENT_IOU
-
+    global CURRENT_VIDEO_PATH, CURRENT_SOURCE_URL, LATEST_COUNTS
     f = request.files.get("file")
     if not f:
-        # 파일이 없으면 그냥 현재 설정값 유지한 채로 다시 렌더
-        return render_template(
-            "index.html",
-            image_url=None,
-            stream_url=None,
-            model_path=CURRENT_MODEL_PATH,
-            conf=CURRENT_CONF,
-            iou=CURRENT_IOU,
-        )
-
-    # 폼에서 설정값 읽어서 전역 업데이트
-    CURRENT_MODEL_PATH = request.form.get("model_path", "yolo11n.pt")
-    CURRENT_CONF = float(request.form.get("conf", 0.25))
-    CURRENT_IOU = float(request.form.get("iou", 0.45))
-
+        return redirect(url_for("index"))
+    
     filename = f.filename.lower()
+    CURRENT_SOURCE_URL = None
+    LATEST_COUNTS = {}
 
-    # ---------- 이미지일 때 ----------
     if filename.endswith((".jpg", ".jpeg", ".png")):
-        # 이미지 열기
-        img = Image.open(f.stream).convert("RGB")
+        try:
+            # 1. 파일을 바이트로 읽어서 OpenCV 포맷으로 바로 변환 (가장 확실함)
+            file_bytes = np.fromstring(f.read(), np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            
+            # 2. 모델 예측
+            model = load_model(CURRENT_MODEL_PATH)
+            results = model.predict(source=img, conf=CURRENT_CONF, iou=CURRENT_IOU, imgsz=1280)
+            apply_names(results[0], model, CURRENT_MODEL_PATH)
+            
+            # 3. 탐지 개수 업데이트
+            new_counts = {}
+            if results[0].boxes is not None:
+                for cls_id in results[0].boxes.cls.cpu().numpy():
+                    name = results[0].names.get(int(cls_id), "Unknown")
+                    new_counts[name] = new_counts.get(name, 0) + 1
+            LATEST_COUNTS = new_counts
 
-        # 모델 로드
-        model = load_model(CURRENT_MODEL_PATH)
+            # 4. [색상 문제 종결]
+            # YOLO plot() 결과물을 가져옵니다. 
+            plotted_img = results[0].plot() 
 
-        # 추론
-        results = model.predict(
-            source=np.array(img),
-            conf=CURRENT_CONF,
-            iou=CURRENT_IOU,
-            verbose=False,
-        )
-        
-        # 클래스 이름 재정의
-        if NEW_CLASS_NAMES:
-            results[0].names = NEW_CLASS_NAMES
+            # 5. PIL(Image.fromarray)을 쓰지 않고, OpenCV의 imwrite를 사용합니다.
+            # OpenCV는 BGR을 표준으로 저장하므로, plotted_img가 BGR이라면 
+            # 변환 없이 그대로 저장해야 색깔이 완벽하게 나옵니다.
+            out = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+            cv2.imwrite(out.name, plotted_img) # 이 한 줄이 정답입니다.
+            
+            return render_template(
+                "index.html", 
+                image_url="/image_result?path=" + out.name, 
+                model_path=CURRENT_MODEL_PATH,
+                conf=CURRENT_CONF,
+                iou=CURRENT_IOU,
+                source_url=""
+            )
+        except Exception as e:
+            print(f"!!! ERROR !!! : {e}")
+            return f"Error: {e}", 500
 
-        # 박스 그리기 (BGR)
-        plotted = results[0].plot()
-        # RGB로 변환
-        plotted = plotted[:, :, ::-1]
-
-        # 임시 파일로 저장
-        out = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-        Image.fromarray(plotted).save(out.name)
-
-        # 결과 이미지 경로 템플릿으로 전달 + 설정값 유지
-        return render_template(
-            "index.html",
-            image_url="/image_result?path=" + out.name,
-            stream_url=None,
-            model_path=CURRENT_MODEL_PATH,
-            conf=CURRENT_CONF,
-            iou=CURRENT_IOU,
-        )
-
-    # ---------- 영상일 때 ----------
+    # 영상 처리 (생략 없이 그대로 유지)
     if filename.endswith((".mp4", ".avi", ".mov", ".mkv")):
-        # 업로드 파일을 임시 mp4로 저장
         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         f.save(tfile.name)
-        CURRENT_VIDEO_PATH = tfile.name  # 전역에 기억 → 스트리밍에서 사용
+        CURRENT_VIDEO_PATH = tfile.name
+        return redirect(url_for("index"))
 
-        # 이미지 대신 스트리밍 URL 전달
-        return render_template(
-            "index.html",
-            image_url=None,
-            stream_url="/video_feed",
-            model_path=CURRENT_MODEL_PATH,
-            conf=CURRENT_CONF,
-            iou=CURRENT_IOU,
-        )
+    return redirect(url_for("index"))
 
-    # 그 외 확장자면 그냥 다시 렌더
-    return render_template(
-        "index.html",
-        image_url=None,
-        stream_url=None,
-        model_path=CURRENT_MODEL_PATH,
-        conf=CURRENT_CONF,
-        iou=CURRENT_IOU,
-    )
-
-
-# -----------------------------
-# 이미지 결과 파일 서빙
-# -----------------------------
 @app.route("/image_result")
 def image_result():
     path = request.args.get("path")
-    if not path or not os.path.exists(path):
-        return "No image", 404
-    return send_file(path, mimetype="image/jpeg")
+    return send_file(path, mimetype="image/jpeg") if path and os.path.exists(path) else ("No image", 404)
 
-
-# -----------------------------
-# 영상 프레임 스트리밍 제너레이터
-# -----------------------------
+# ----------------------------------------------------
+# 영상 스트리밍 (핵심 수정 부분)
+# ----------------------------------------------------
 def generate_video_stream():
-    global CURRENT_VIDEO_PATH, CURRENT_MODEL_PATH, CURRENT_CONF, CURRENT_IOU
+    global LATEST_COUNTS
+    source = CURRENT_SOURCE_URL if CURRENT_SOURCE_URL else CURRENT_VIDEO_PATH
+    if not source: return
 
-    if not CURRENT_VIDEO_PATH:
-        return
-
-    cap = cv2.VideoCapture(CURRENT_VIDEO_PATH)
     model = load_model(CURRENT_MODEL_PATH)
+    cap = cv2.VideoCapture(source)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret: break
 
-        # 프레임마다 YOLO 추론
-        results = model.predict(
-            source=frame,
-            conf=CURRENT_CONF,
-            iou=CURRENT_IOU,
-            verbose=False,
-        )
-        
-        if NEW_CLASS_NAMES:
-                    results[0].names = NEW_CLASS_NAMES
+            # 예측
+            with torch.no_grad():
+                results = model.predict(source=frame, conf=CURRENT_CONF, iou=CURRENT_IOU, imgsz=640, verbose=False)
+            
+            apply_names(results[0], model, CURRENT_MODEL_PATH)
+            
+            # [추가] 탐지 개수 실시간 집계
+            temp_counts = {}
+            for cls_id in results[0].boxes.cls.cpu().numpy():
+                name = results[0].names.get(int(cls_id), "Unknown")
+                temp_counts[name] = temp_counts.get(name, 0) + 1
+            LATEST_COUNTS = temp_counts  # 전역 변수 갱신
 
-        plotted = results[0].plot()  # BGR 프레임 (박스 포함)
+            plotted = results[0].plot()
+            ok, buf = cv2.imencode(".jpg", plotted)
+            if not ok: continue
 
-        # JPEG로 인코딩해서 스트림 전송
-        ok, buf = cv2.imencode(".jpg", plotted)
-        if not ok:
-            continue
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
+    finally:
+        if cap: cap.release()
 
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-        )
-
-    cap.release()
-
-
-# -----------------------------
-# 영상 스트림 엔드포인트
-# -----------------------------
 @app.route("/video_feed")
 def video_feed():
-    return Response(
-        generate_video_stream(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-    )
+    return Response(generate_video_stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-
-# -----------------------------
-# 엔트리 포인트
-# -----------------------------
 if __name__ == "__main__":
-    # debug=False 로 두면 watchdog 에러 없이 깔끔하게 돌아감
-    app.run(host="0.0.0.0", port=5000, debug=False)
-#
+    app.run(host="0.0.0.0", port=4403, debug=False)

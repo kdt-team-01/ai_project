@@ -1,9 +1,8 @@
-streamlit
+flask
+gunicorn
 ultralytics
-torch
-torchvision
 opencv-python-headless
 pillow
 numpy
-imageio
-imageio-ffmpeg
+torch
+torchvision
